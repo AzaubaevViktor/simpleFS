@@ -1,8 +1,6 @@
 #include "FS.h"
 using namespace std;
 
-uint32_t createObj(Block *fs, uint8_t obj_type, char *name);
-
 string getFolder(string path) {
     unsigned long pos = path.find_last_of("/");
     return path.substr(0, pos + 1);
@@ -13,7 +11,7 @@ string getFileName(string path) {
     return path.substr(pos + 1);
 }
 
-void create_empty_FS(string filename, uint32_t block_count)
+void FS::create_empty_FS(string filename, uint32_t block_count)
 {
 	ofstream fl(filename, ios_base::binary);
 	string empty_block("");
@@ -63,28 +61,28 @@ void create_empty_FS(string filename, uint32_t block_count)
     fl.close();
 }
 
-Block *load_FS(string filename)
+FS::FS(string filename)
 {
-	ifstream fs(filename, ios_base::binary);
-	Block *ram_fs = new Block[1];
+	ifstream dataStream(filename, ios_base::binary);
+	fs = new Block[1];
 
-	fs.read((char *)ram_fs, BS / sizeof(char));
-	Superblock *superblock = (Superblock *)&ram_fs[0];
+	dataStream.read((char *)fs, BS / sizeof(char));
+	superblock = (Superblock *)&fs[0];
 
-    ram_fs = (Block *) realloc(ram_fs, sizeof(Block) * superblock->block_count);
-    fs.read((char *) (ram_fs + 1), sizeof(Block) / sizeof(char) * (superblock->block_count - 1));
-	return ram_fs;
+    fs = (Block *) realloc(fs, sizeof(Block) * superblock->block_count);
+    superblock = (Superblock *)&fs[0];
+    dataStream.read((char *) (fs + 1), sizeof(Block) / sizeof(char) * (superblock->block_count - 1));
+    dataStream.close();
 }
 
-void initFs(Block *fs) {
+void FS::initFs() {
     // Проверка на то, что ФС уже проинициализирована
-    createObj(fs, FS_CATALOG, string("__root_catalog"));
+    createObj(FS_CATALOG, string("__root_catalog"));
 }
 
-void saveFs(Block *fs, string filename) {
+void FS::saveFs(string filename) {
     ofstream fl(filename, ios_base::binary);
     fl.clear();
-    Superblock *superblock = getSuperblock(fs);
     for (uint32_t blockI = 0; blockI < superblock->block_count; ++blockI) {
         fl.write((char *)(fs + blockI), BS / sizeof(char));
     }
@@ -97,6 +95,18 @@ void clearBlock(Block *block) {
 
 void clearINode(INode *iNode) {
     memset(iNode, '\0', INODE_SIZE);
+}
+
+Block *FS::getPointerByDataNumber(uint32_t number) {
+    return (Block *) getPointerByIndex((Block *) superblock + superblock->start_data, BS, number);
+}
+
+INode *FS::getPointerByINodeNumber(uint32_t number) {
+    return (INode *) getPointerByIndex((Block *) superblock + superblock->first_inode, INODE_SIZE, number);
+}
+
+MetaInf *FS::getRootCatalog() {
+    return (MetaInf *) getPointerByDataNumber(1);
 }
 
 
@@ -148,17 +158,17 @@ uint32_t allocate(Block *bitMskBlock, uint32_t bitCount)
 	return (i * 8 + bitI + 1);
 }
 
-uint32_t allocateDataBlock(Block *fs) {
-    Superblock *superblock = getSuperblock(fs);
+uint32_t FS::allocateDataBlock() {
     superblock->free_data_blocks -= 1;
-	return allocate(
-		fs + superblock->bit_mask_data,
-		superblock->data_blocks_count
-		);
+    uint32_t dbn = allocate(
+            fs + superblock->bit_mask_data,
+            superblock->data_blocks_count
+            );
+    ((MetaInf *) getPointerByDataNumber(dbn))->number = dbn;
+    return dbn;
 }
 
-uint32_t allocateINode(Block *fs) {
-    Superblock *superblock = getSuperblock(fs);
+uint32_t FS::allocateINode() {
     superblock->free_inodes -= 1;
 	return allocate(
 		fs + superblock->bit_mask_inode,
@@ -167,18 +177,16 @@ uint32_t allocateINode(Block *fs) {
 
 }
 
-uint32_t createObj(Block *fs, uint8_t obj_type, string name) {
+uint32_t FS::createObj(uint8_t obj_type, string name) {
 	// ������� �������� name �� ������� ���������� �������� and /
     if (string::npos != name.find('/'))
         return 0;
-    Superblock *superblock = getSuperblock(fs);
 
-	uint32_t data_block_number = allocateDataBlock(fs);
-    uint32_t data_inode_number = allocateINode(fs);
+	uint32_t data_block_number = allocateDataBlock();
+    uint32_t data_inode_number = allocateINode();
 
-	MetaInf* metainf = (MetaInf*) getPointerByDataNumber(superblock, data_block_number);
-    clearBlock((Block *) metainf);
-    clearINode(getPointerByINodeNumber(superblock, data_inode_number));
+	MetaInf* metainf = (MetaInf*) getPointerByDataNumber(data_block_number);
+    clearINode(getPointerByINodeNumber(data_inode_number));
 
 	metainf->length = 0;
 	metainf->obj_type = obj_type;
@@ -188,29 +196,27 @@ uint32_t createObj(Block *fs, uint8_t obj_type, string name) {
 	return data_block_number;
 }
 
-Block *getDataFromINode(Block *fs, uint32_t inodeNumber, uint32_t n) {
-    Superblock *superblock = getSuperblock(fs);
+Block *FS::getDataFromINode(uint32_t inodeNumber, uint32_t n) {
 
-	INode *inode = getPointerByINodeNumber(superblock, inodeNumber);
+	INode *inode = getPointerByINodeNumber(inodeNumber);
 	while (n >= INODE_DATA_BLOCKS) {
 		if (0 == inode->next_inode) return NULL;
-		inode = getPointerByINodeNumber(superblock, inode->next_inode);
+		inode = getPointerByINodeNumber(inode->next_inode);
 		n -= INODE_DATA_BLOCKS;
 	}
     uint32_t dbn = inode->data_blocks_numbers[n];
     if (0 == dbn) return NULL;
-	return getPointerByDataNumber(superblock, dbn);
+	return getPointerByDataNumber(dbn);
 }
 
-int8_t addDataBlockToObj(Block *fs, MetaInf *obj, uint32_t datablock) {
-    Superblock *superblock = getSuperblock(fs);
-    INode *inode = getPointerByINodeNumber(superblock, obj->inode_number);
+int8_t FS::addDataBlockToObj(MetaInf *obj, uint32_t datablock) {
+    INode *inode = getPointerByINodeNumber(obj->inode_number);
     uint64_t index = 0;
     while (inode->data_blocks_numbers[index] != 0) {
         index++;
         if (INODE_DATA_BLOCKS == index) {
-            if (0 == inode->next_inode) inode->next_inode = allocateINode(fs);
-            inode = getPointerByINodeNumber(superblock, inode->next_inode);
+            if (0 == inode->next_inode) inode->next_inode = allocateINode();
+            inode = getPointerByINodeNumber(inode->next_inode);
             index -= INODE_DATA_BLOCKS;
         }
     }
@@ -218,61 +224,108 @@ int8_t addDataBlockToObj(Block *fs, MetaInf *obj, uint32_t datablock) {
     return 0;
 }
 
-Block *addDataToFile(Block *fs, MetaInf *file) {
-    Superblock *superblock = getSuperblock(fs);
-
+Block *FS::addDataToFile(MetaInf *file) {
     if (FS_FILE != file->obj_type) return NULL;
-    uint32_t newDatablockN = allocateDataBlock(fs);
-    addDataBlockToObj(fs, file, newDatablockN);
-    return getPointerByDataNumber(superblock, newDatablockN);
+    uint32_t newDatablockN = allocateDataBlock();
+    addDataBlockToObj(file, newDatablockN);
+    return getPointerByDataNumber(newDatablockN);
 }
 
-int8_t createLink(Block *fs, MetaInf *parent, uint32_t childN) {
+int8_t FS::createLink(MetaInf *parent, uint32_t childN) {
 	if (FS_CATALOG != parent->obj_type) return -1;
-	addDataBlockToObj(fs, parent, childN);
+	addDataBlockToObj(parent, childN);
     parent->length++;
 	return 0;
 }
 
-int8_t copyFileTo(Block *fs, uint32_t sourceN, string path) {
-    initSuperblock;
+int8_t FS::unLink(MetaInf *parent, uint32_t childN) {
+    if (FS_CATALOG != parent->obj_type) return -1;
+    INode *inode = getPointerByINodeNumber(parent->inode_number);
+    uint64_t index = 0;
+    while (inode->data_blocks_numbers[index] != childN) {
+        index++;
+        if (INODE_DATA_BLOCKS == index) {
+            if (0 == inode->next_inode) inode->next_inode = allocateINode();
+            inode = getPointerByINodeNumber(inode->next_inode);
+            index -= INODE_DATA_BLOCKS;
+        }
+    }
+    uint64_t indexTC = index; // to change
+    INode *iNodeTC = inode;
+
+    uint64_t lastIndex = index;
+    INode *lastInode = inode;
+
+    while (inode->data_blocks_numbers[index] != 0) {
+        lastIndex = index;
+        lastInode = inode;
+        index++;
+        if (INODE_DATA_BLOCKS == index) {
+            if (0 == inode->next_inode) inode->next_inode = allocateINode();
+            inode = getPointerByINodeNumber(inode->next_inode);
+            index -= INODE_DATA_BLOCKS;
+        }
+    }
+
+    iNodeTC->data_blocks_numbers[indexTC] = lastInode->data_blocks_numbers[lastIndex];
+    lastInode->data_blocks_numbers[lastIndex] = 0;
+    --parent->length;
+    return 0;
+}
+
+int8_t FS::copyFileTo(uint32_t sourceN, string path) {
     string folder = getFolder(path);
-    MetaInf *destinationFolder = findInFS(fs, folder);
+    MetaInf *destinationFolder = findInFS(folder);
     if (!destinationFolder) return -1;
 
-    MetaInf *source = (MetaInf *) getPointerByDataNumber(superblock, sourceN);
+    MetaInf *source = (MetaInf *) getPointerByDataNumber(sourceN);
     if (FS_FILE != source->obj_type) return -2;
 
     string name = getFileName(path);
-    uint32_t fdbn = createObj(fs, FS_FILE, name);
+    uint32_t fdbn = createObj(FS_FILE, name);
 
-    MetaInf *destination = (MetaInf *) getPointerByDataNumber(superblock, fdbn);
+    MetaInf *destination = (MetaInf *) getPointerByDataNumber(fdbn);
     destination->length = source->length;
-    createLink(fs, destinationFolder, fdbn);
+    createLink(destinationFolder, fdbn);
 
-    INode *sINode = getPointerByINodeNumber(superblock, source->inode_number);
-    INode *dINode = getPointerByINodeNumber(superblock, destination->inode_number);
+    INode *sINode = getPointerByINodeNumber(source->inode_number);
 
     Block *sBlock;
     Block *dBlock;
 
     unsigned int index = 0;
     while (sINode->data_blocks_numbers[index] != 0) {
-        sBlock = getPointerByDataNumber(superblock, sINode->data_blocks_numbers[index]);
-        dBlock = addDataToFile(fs, destination);
+        sBlock = getPointerByDataNumber(sINode->data_blocks_numbers[index]);
+        dBlock = addDataToFile(destination);
         memcpy(dBlock, sBlock, BS);
         ++index;
         if (INODE_DATA_BLOCKS == index) {
             if (!sINode->next_inode) break;
-            sINode = getPointerByINodeNumber(superblock, sINode->next_inode);
+            sINode = getPointerByINodeNumber(sINode->next_inode);
             index = 0;
         }
     }
     return 0;
 }
 
-void printFSInfo(Block *fs) {
-    Superblock *superblock = getSuperblock(fs);
+int8_t FS::moveFileTo(string pathFrom, string pathTo) {
+    MetaInf *catalogS = findInFS(getFolder(pathFrom));
+    if ((!catalogS) || (FS_CATALOG != catalogS->obj_type)) return -1;
+
+    MetaInf *fileS = findInCatalog(catalogS, getFileName(pathFrom));
+    if ((!fileS) || (FS_FILE != fileS->obj_type)) return -1;
+
+    MetaInf *catalogD = findInFS(getFolder(pathTo));
+    if ((!catalogD) || (FS_CATALOG != catalogD->obj_type)) return -1;
+
+    unLink(catalogS, fileS->number);
+    createLink(catalogD, fileS->number);
+    string name = getFileName(pathTo);
+    memcpy(fileS->name, name.c_str(), name.size() * sizeof(char));
+    return 0;
+}
+
+void FS::printFSInfo() {
     cout << "FS                 :" << superblock->fs_name << endl;
     cout << "Block count        :" << superblock->block_count << endl;
     cout << "INodes count       :" << superblock->inodes_count << endl;
@@ -281,13 +334,13 @@ void printFSInfo(Block *fs) {
     cout << "Free DataBlocks    :" << superblock->free_data_blocks << endl;
 }
 
-void printObj(MetaInf *obj, string ident) {
+void FS::printObj(MetaInf *obj, string ident) {
     cout << ident << obj->name;
     if (FS_CATALOG == obj->obj_type) cout << "/";
     cout << " (" << obj->length << ")[Inode:" << obj->inode_number << "]" << endl;
 }
 
-void printObjsInCatalog(Block *fs, MetaInf *catalog) {
+void FS::printObjsInCatalog(MetaInf *catalog) {
     if (FS_CATALOG != catalog->obj_type) {
         cout << "Не каталог!" << endl;
         return;
@@ -295,29 +348,31 @@ void printObjsInCatalog(Block *fs, MetaInf *catalog) {
     cout << catalog->name << "/ :" << endl;
     cout << "Main INode: " << catalog->inode_number << endl;
     for (uint32_t index = 0; index < catalog->length; ++index) {
-        MetaInf *obj = (MetaInf *) getDataFromINode(fs, catalog->inode_number, index);
+        MetaInf *obj = (MetaInf *) getDataFromINode(catalog->inode_number, index);
         printObj(obj, "    ");
     }
 }
 
-MetaInf *findInCatalog (Block *fs, MetaInf *catalog, string name) {
+
+
+MetaInf *FS::findInCatalog(MetaInf *catalog, string name) {
 	if (FS_CATALOG != catalog->obj_type) return NULL;
 	MetaInf *object = NULL;
 	for (uint32_t i = 0; i < catalog->length; ++i) {
-		object = (MetaInf *) getDataFromINode(fs, catalog->inode_number, i);
+		object = (MetaInf *) getDataFromINode(catalog->inode_number, i);
 		string obj_name = string((char *) object->name);
 		if (obj_name == name) return object;
 	}
 	return NULL;
 }
 
-MetaInf *findInFS(Block *fs, string name) {
-    Superblock *superblock = getSuperblock(fs);
+
+MetaInf *FS::findInFS(string name) {
 
 	if ('/' != name[0]) return NULL;
     unsigned long startN = 1;
 	int isCatalog = false;
-	MetaInf *current = (MetaInf *) getPointerByDataNumber(superblock, ROOT_DATABLOCK_N);
+	MetaInf *current = (MetaInf *) getPointerByDataNumber(ROOT_DATABLOCK_N);
     unsigned long i = startN;
 	while ('\0' != name[i]) {
         i = startN;
@@ -325,14 +380,14 @@ MetaInf *findInFS(Block *fs, string name) {
 		switch (name[i])
 		{
 		case '/':
-			current = findInCatalog(fs, current, name.substr(startN, i - startN));
+			current = findInCatalog(current, name.substr(startN, i - startN));
 			if (!current) return NULL;
 			startN = i + 1;
 			break;
 		case '\0':
 			if ('/' == name[i - 1]) {isCatalog = true;}
             else {
-                current = findInCatalog(fs, current, name.substr(startN, i - startN));
+                current = findInCatalog(current, name.substr(startN, i - startN));
                 if (!current) return NULL;
             }
 
@@ -345,7 +400,7 @@ MetaInf *findInFS(Block *fs, string name) {
 	return current;
 }
 
-int importDataToFile(Block *fs, string fileName, MetaInf *file) {
+int FS::importDataToFile(string fileName, MetaInf *file) {
     if (FS_FILE != file->obj_type) return -1;
     ifstream dataStream(fileName, ios_base::binary);
     Block *block;
@@ -355,9 +410,9 @@ int importDataToFile(Block *fs, string fileName, MetaInf *file) {
     dataStream.seekg(0, dataStream.beg);
 
     while (size < file->length) {
-        block = getDataFromINode(fs, file->inode_number, size / BS);
+        block = getDataFromINode(file->inode_number, size / BS);
         if (!block) {
-            block = addDataToFile(fs, file);
+            block = addDataToFile(file);
         }
         dataStream.read((char *) block, BS / sizeof(char));
         size += BS;
@@ -366,13 +421,13 @@ int importDataToFile(Block *fs, string fileName, MetaInf *file) {
     return 0;
 }
 
-int exportDataFromFile(Block *fs, string fileName, MetaInf *file) {
+int FS::exportDataFromFile(string fileName, MetaInf *file) {
     if (FS_FILE != file->obj_type) return -1;
     ofstream dataStream(fileName, ios_base::binary);
     Block *block;
     uint64_t size = 0;
     while (size < file->length) {
-        block = getDataFromINode(fs, file->inode_number, size / BS);
+        block = getDataFromINode(file->inode_number, size / BS);
         dataStream.write((char *) block, min(BS, (const int &) (file->length - size)));
         size += BS;
     }
@@ -381,13 +436,13 @@ int exportDataFromFile(Block *fs, string fileName, MetaInf *file) {
 }
 
 
-int printDataFromFile(Block *fs, MetaInf *file) {
+int FS::printDataFromFile(MetaInf *file) {
     uint64_t size = 0;
     Block *block;
     uint32_t index = 0;
     cout << "```` START FILE" << endl;
     while (size < file->length) {
-        block = getDataFromINode(fs, file->inode_number, index);
+        block = getDataFromINode(file->inode_number, index);
         cout.write((const char *) block, min(BS, (const int &) (file->length - size)));
         index++;
         size += BS;

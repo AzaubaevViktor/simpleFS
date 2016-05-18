@@ -1,55 +1,63 @@
 #include "Header.h"
 #include "FS.h"
-#include <iostream>
 #include <sstream>
 
 using namespace std;
 
 int main() {
-    create_empty_FS("test.img", 20000);
-    Block *fs = load_FS("test.img");
-    initFs(fs);
-    printFSInfo(fs);
-    INode *rootINode = getPointerByINodeNumber((Superblock *) fs, 1);
-    MetaInf *root_catalog = (MetaInf *) getPointerByDataNumber((Superblock *) fs, ROOT_DATABLOCK_N);
+    FS::create_empty_FS("test.img", 20000);
+
+    FS fs("test.img");
+    fs.initFs();
+    fs.printFSInfo();
+    MetaInf *root_catalog = fs.getRootCatalog();
     for (int i = 0; i < 10; ++i) {
         std::ostringstream name;
         std::ostringstream catalog_name;
         catalog_name << "catalog_" << i;
-        uint32_t cdbn = createObj(fs, FS_CATALOG, catalog_name.str());
-        createLink(fs, root_catalog, cdbn);
+        uint32_t cdbn = fs.createObj(FS_CATALOG, catalog_name.str());
+        fs.createLink(root_catalog, cdbn);
         name << "file_" << i;
-        uint32_t fdbn = createObj(fs, FS_FILE, name.str());
+        uint32_t fdbn = fs.createObj(FS_FILE, name.str());
         name << "_";
-        uint32_t fdbn2 = createObj(fs, FS_FILE, name.str());
-        MetaInf *cat = (MetaInf *) getPointerByDataNumber(getSuperblock(fs), cdbn);
-        createLink(fs, cat, fdbn);
-        createLink(fs, cat, fdbn2);
+        uint32_t fdbn2 = fs.createObj(FS_FILE, name.str());
+        MetaInf *cat = (MetaInf *) fs.getPointerByDataNumber(cdbn);
+        fs.createLink(cat, fdbn);
+        fs.createLink(cat, fdbn2);
     }
     cout << "======= FS INFO ========" << endl;
-    printFSInfo(fs);
+    fs.printFSInfo();
     cout << "======= OBJS IN ROOT CATALOG ======" << endl;
-    printObjsInCatalog(fs, root_catalog);
+    fs.printObjsInCatalog(root_catalog);
     cout << "======= OBJS IN 5 DATABLOCKCATALOG ======" << endl;
-    printObjsInCatalog(fs, (MetaInf *) getPointerByDataNumber(getSuperblock(fs), 5));
+    fs.printObjsInCatalog((MetaInf *) fs.getPointerByDataNumber(5));
     cout << "======= FIND `/catalog_1/file_1_` file ======" << endl;
-    MetaInf *finded = findInFS(fs, "/catalog_1/file_1_");
+    MetaInf *finded = fs.findInFS("/catalog_1/file_1_");
     if (finded) {
-        printObj(finded, "finded:> ");
+        fs.printObj(finded, "finded:> ");
     } else {
         cout << "Not found!" << endl;
     }
     cout << "Load Header.h to founded file..." << endl;
-    importDataToFile(fs, "петросня.png", finded);
-    cout << "===== SHOW LOADED DATA =====" << endl;
-//    printDataFromFile(fs, finded);
+    fs.importDataToFile("петросня.png", finded);
+
     cout << "===== EXPORT DATA TO FILE =====" << endl;
-    exportDataFromFile(fs, "export_test", finded);
+    fs.exportDataFromFile("export_test", finded);
+
     cout << "====== COPY FILE =====" << endl;
-    copyFileTo(fs, 7, "/catalog_3/copying_file");
-    cout << "====== WRITE DATA =====" << endl;
-//    printDataFromFile(fs, findInFS(fs, "/catalog_3/copying_file"));
+    fs.copyFileTo(7, "/catalog_3/copying_file");
+    fs.printDataFromFile(fs.findInFS("/catalog_3/copying_file"));
+
+    cout << "====== MOVE FILE =====" << endl;
+    fs.moveFileTo("/catalog_1/file_1_", "/catalog_3/moved_file");
+
+    cout << "====== SHOW CATALOG 3 =====" << endl;
+    fs.printObjsInCatalog(fs.findInFS("/catalog_3/"));
+
+    cout << "====== SHOW CATALOG 1 =====" << endl;
+    fs.printObjsInCatalog(fs.findInFS("/catalog_1"));
+
     cout << "Save FS and exit" << endl;
-    saveFs(fs, "test2.img");
+    fs.saveFs("test2.img");
     return 0;
 }
